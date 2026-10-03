@@ -42,13 +42,18 @@ async function switchToAndUpdate(branch) {
   }
 }
 
-export async function handleNewBranch(branch) {
+/**
+ * Finish-current-first: adopt a managed branch only when idle
+ * (on BASE_BRANCH or a non-managed branch). If already testing another
+ * managed branch, queue the candidate and leave checkout unchanged.
+ */
+async function adoptBranchIfIdle(branch, reason) {
   if (!isManagedBranch(branch)) {
     log.info(`Ignoring unmanaged branch: ${branch}`);
     return;
   }
 
-  log.info(`New branch detected: ${branch}`);
+  log.info(`${reason}: ${branch}`);
 
   try {
     await assertCleanWorkingTree("branch switch");
@@ -61,10 +66,25 @@ export async function handleNewBranch(branch) {
       return;
     }
 
+    if (isManagedBranch(current)) {
+      log.info(
+        `Queued ${branch}; currently testing ${current} (finish current first)`,
+      );
+      return;
+    }
+
     await switchToAndUpdate(branch);
   } catch (error) {
-    warnOrThrow(error, "Failed to check out new branch");
+    warnOrThrow(error, "Failed to check out branch");
   }
+}
+
+export async function handleNewBranch(branch) {
+  await adoptBranchIfIdle(branch, "New branch detected");
+}
+
+export async function handlePullRequestReady(branch) {
+  await adoptBranchIfIdle(branch, "PR ready for testing");
 }
 
 export async function handlePushToBranch(branch, { created, deleted, forced }) {
@@ -121,34 +141,37 @@ export async function handlePushToBranch(branch, { created, deleted, forced }) {
   }
 }
 
-async function cleanupMergedBranch(branch, { deleteRemote }) {
+async function cleanupClosedBranch(branch, { wasMerged }) {
   if (!isManagedBranch(branch)) {
-    log.info(`Ignoring merge/cleanup for unmanaged branch: ${branch}`);
+    log.info(`Ignoring close/cleanup for unmanaged branch: ${branch}`);
     return;
   }
 
-  log.info(`Branch merged: ${branch}`);
+  log.info(wasMerged ? `Branch merged: ${branch}` : `Branch closed: ${branch}`);
 
   try {
-    await assertCleanWorkingTree("merge cleanup");
+    await assertCleanWorkingTree("close cleanup");
     await fetchOrigin();
     await updateBaseBranch();
 
     const next = await resolveNextBranch({ excludeBranch: branch });
     await switchToAndUpdate(next);
 
-    await deleteLocalBranch(branch, { mergedConfirmed: deleteRemote });
-
-    if (deleteRemote) {
-      await deleteRemoteBranch(branch);
-    }
+    // Force-delete local after PR close (squash-merge or unmerged close).
+    await deleteLocalBranch(branch, { mergedConfirmed: true });
+    await deleteRemoteBranch(branch);
   } catch (error) {
-    warnOrThrow(error, "Failed merge cleanup");
+    warnOrThrow(error, "Failed close cleanup");
   }
 }
 
+export async function handlePullRequestClosed(branch, { merged }) {
+  await cleanupClosedBranch(branch, { wasMerged: Boolean(merged) });
+}
+
+/** @deprecated Prefer handlePullRequestClosed */
 export async function handlePullRequestMerged(branch) {
-  await cleanupMergedBranch(branch, { deleteRemote: true });
+  await handlePullRequestClosed(branch, { merged: true });
 }
 
 export async function handleRemoteBranchDeleted(branch) {
@@ -170,7 +193,7 @@ export async function handleRemoteBranchDeleted(branch) {
       await switchToAndUpdate(next);
     }
 
-    await deleteLocalBranch(branch);
+    await deleteLocalBranch(branch, { mergedConfirmed: true });
   } catch (error) {
     warnOrThrow(error, "Failed delete cleanup");
   }

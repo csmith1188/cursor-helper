@@ -16,12 +16,15 @@ GitHub Actions (or the webhook) only **detects and forwards** events. This Node 
 
 ## What it does
 
+**Queue policy: finish current first.** While the host is already on a managed Cursor branch, new branches / ready PRs are queued (logged, no checkout). Closing or merging the current PR advances to the newest remaining open managed PR, or `BASE_BRANCH` if none remain.
+
 | Remote event | Local behavior |
 | --- | --- |
-| New feature branch published | Fetch, create/track the branch, check it out |
+| New feature branch published | Fetch and check it out **only if idle** (on base / non-managed); otherwise queue |
+| PR opened (non-draft), ready for review, or reopened | Same idle checkout / queue rule |
 | Push to the branch you already have checked out | Fast-forward pull only |
-| Push to some other feature branch | Ignored (no surprise checkouts) |
-| Feature PR squash-merged | Update base branch, delete obsolete local branch, delete remote branch if it still exists, switch to the newest still-open prefixed PR (or base) |
+| Push / create / ready PR for a different feature branch while testing | Ignored (stay on current) |
+| Feature PR closed (merged or not) | Update base, delete local + remote head branch, switch to newest still-open prefixed PR (or base) |
 | Remote feature branch deleted | Clean up the local branch; switch away first if needed |
 
 **Safety:** the tool never runs `reset --hard`, force-checkout, stash, or force-push. If the working tree has uncommitted or untracked changes, it logs a warning and refuses the operation. Pulls use `--ff-only`.
@@ -98,6 +101,8 @@ Check status:
 
 The service should show as running. It starts with Windows after install.
 
+**Note:** The service account is `NT AUTHORITY\NETWORK SERVICE`. If the runner lives under your user profile (for example `Documents\…`), that account often cannot read the path and the service exits immediately. Either grant `NETWORK SERVICE` read/execute on the runner folder and each parent directory, install the runner outside the profile (for example `C:\actions-runner`), or run `run.cmd` interactively under your user account instead of the service.
+
 To stop/uninstall later: `.\svc.cmd stop` then `.\svc.cmd uninstall`.
 
 ### 5. Add the GitHub Actions workflow
@@ -116,7 +121,7 @@ working-directory: C:\Users\you\cursor-helper
 
 Commit and push that workflow on `main` (or your default branch) so GitHub can run it.
 
-The workflow listens for create / delete / push / merged pull_request events, then runs:
+The workflow listens for create / delete / push / pull_request (`opened`, `ready_for_review`, `reopened`, `closed`) events, then runs:
 
 ```bat
 node src\cli.js
@@ -188,17 +193,19 @@ pm2 startup
 
 Use a throwaway feature branch on the configured repository (keep a clean working tree in `REPO_PATH`).
 
-1. **Branch creation** — Create and push `cursor/test-sync` (or open a Cursor agent that publishes a branch).  
-   Expect: `New branch detected` → local checkout switches to that branch.
+1. **Branch / PR ready while idle** — From `main`, create and push `cursor/test-sync` (or open a non-draft Cursor PR).  
+   Expect: `New branch detected` / `PR ready for testing` → local checkout switches to that branch.
 
-2. **Push while checked out** — Push another commit to the same branch.  
-   Expect: `Push received; pulling latest changes` and a fast-forward update.  
-   Pushing to a *different* feature branch while you stay on the first one should **not** switch checkouts.
+2. **Finish current first** — While still on `cursor/test-sync`, publish another `cursor/…` branch or PR.  
+   Expect: `Queued …; currently testing cursor/test-sync` and **no** checkout change.
 
-3. **Squash-merge** — Open a PR, squash-merge into `main` (or your `BASE_BRANCH`).  
-   Expect: `Branch merged` → base updated → obsolete local branch removed → remote deleted only if it still exists → switch to another open `cursor/…` PR if one remains, otherwise `main`.
+3. **Push while checked out** — Push another commit to the branch you are on.  
+   Expect: `Push received; pulling latest changes` and a fast-forward update.
 
-4. **Safety** — Make a local edit without committing, then trigger a branch switch.  
+4. **Close or squash-merge** — Close or merge the PR for the branch you are testing.  
+   Expect: `Branch merged` / `Branch closed` → base updated → local + remote head deleted → switch to another open `cursor/…` PR if one was queued, otherwise `main`.
+
+5. **Safety** — Make a local edit without committing, then trigger a branch switch.  
    Expect: `WARNING: Local changes detected; … aborted` and no checkout change.
 
 Manual CLI (same as Actions, useful for debugging):
@@ -215,5 +222,5 @@ npm run sync -- --event push --payload path\to\event.json
 - Duplicate GitHub webhook deliveries (`X-GitHub-Delivery`) are ignored.
 - Runner and webhook share a file lock so they will not interleave Git ops if `SYNC_MODE=both`.
 - Force-pushes are refused (cannot fast-forward safely).
-- Deleting a merged branch from `origin` uses the Git credentials already configured for that local clone (SSH key or credential manager). Listing open PRs uses `GITHUB_TOKEN` (PAT or the Actions token).
+- Deleting a closed/merged branch from `origin` uses the Git credentials already configured for that local clone (SSH key or credential manager). Listing open PRs uses `GITHUB_TOKEN` (PAT or the Actions token).
 - To sync a second repository, use a second install/`.env` and a second runner (or webhook) scoped to that repository.

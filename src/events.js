@@ -4,7 +4,8 @@ import {
   extractBranchFromPullRequest,
   extractBranchFromPush,
   handleNewBranch,
-  handlePullRequestMerged,
+  handlePullRequestClosed,
+  handlePullRequestReady,
   handlePushToBranch,
   handleRemoteBranchDeleted,
   payloadMatchesConfiguredRepo,
@@ -59,20 +60,34 @@ export async function routeEvent(event, payload) {
       return;
     }
     case "pull_request": {
-      if (payload.action !== "closed") {
-        log.info(`Ignoring pull_request action: ${payload.action}`);
-        return;
-      }
-      if (!payload.pull_request?.merged) {
-        log.info("Ignoring closed pull request that was not merged");
-        return;
-      }
+      const action = payload.action;
       const branch = extractBranchFromPullRequest(payload);
-      if (!branch) {
-        log.warn("Merged pull request missing head branch name");
+
+      if (action === "opened" || action === "ready_for_review" || action === "reopened") {
+        if (action === "opened" && payload.pull_request?.draft) {
+          log.info("Ignoring draft pull request open; waiting for ready_for_review");
+          return;
+        }
+        if (!branch) {
+          log.warn("Pull request missing head branch name");
+          return;
+        }
+        await handlePullRequestReady(branch);
         return;
       }
-      await handlePullRequestMerged(branch);
+
+      if (action === "closed") {
+        if (!branch) {
+          log.warn("Closed pull request missing head branch name");
+          return;
+        }
+        await handlePullRequestClosed(branch, {
+          merged: Boolean(payload.pull_request?.merged),
+        });
+        return;
+      }
+
+      log.info(`Ignoring pull_request action: ${action}`);
       return;
     }
     default: {
