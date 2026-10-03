@@ -16,7 +16,23 @@ function loadConfig() {
   const repoPath = path.resolve(required("REPO_PATH"));
   const owner = required("GITHUB_OWNER");
   const repo = required("GITHUB_REPO");
-  const webhookSecret = required("GITHUB_WEBHOOK_SECRET");
+
+  const syncMode = (process.env.SYNC_MODE || "webhook").trim().toLowerCase();
+  if (!["webhook", "runner", "both"].includes(syncMode)) {
+    throw new Error(
+      `Invalid SYNC_MODE: ${process.env.SYNC_MODE} (use webhook, runner, or both)`,
+    );
+  }
+
+  const webhookEnabled = syncMode === "webhook" || syncMode === "both";
+  const runnerEnabled = syncMode === "runner" || syncMode === "both";
+
+  const webhookSecret = webhookEnabled
+    ? required("GITHUB_WEBHOOK_SECRET")
+    : (process.env.GITHUB_WEBHOOK_SECRET || "").trim();
+
+  // In GitHub Actions, GITHUB_TOKEN is injected automatically and is enough
+  // to list open PRs when the workflow grants pull-requests: read.
   const githubToken = required("GITHUB_TOKEN");
 
   const port = Number(process.env.PORT || "3000");
@@ -46,6 +62,9 @@ function loadConfig() {
     owner,
     repo,
     fullName: `${owner}/${repo}`,
+    syncMode,
+    webhookEnabled,
+    runnerEnabled,
     webhookSecret,
     githubToken,
     port,

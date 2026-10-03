@@ -1,17 +1,20 @@
 {
   "name": "cursor-branch-sync",
   "version": "1.0.0",
-  "description": "Keep a local Git checkout synchronized with remote Cursor feature branches via GitHub webhooks",
+  "description": "Keep a local Git checkout synchronized with remote Cursor feature branches via GitHub Actions self-hosted runners or webhooks",
   "main": "src/index.js",
   "type": "module",
   "scripts": {
-    "start": "node src/index.js"
+    "start": "node src/index.js",
+    "sync": "node src/cli.js"
   },
   "engines": {
     "node": ">=18"
   },
   "keywords": [
     "github",
+    "github-actions",
+    "self-hosted-runner",
     "webhooks",
     "git",
     "cursor"

@@ -1,0 +1,29 @@
+# Copy this file into the *managed* repository as:
+#   .github/workflows/cursor-branch-sync.yml
+#
+# Requires a GitHub Actions self-hosted runner on the same Windows machine
+# that holds the local clone (REPO_PATH). No inbound ports or tunnel needed.
+#
+# Edit BRANCH_SYNC_HOME below to the absolute path of your cursor-branch-sync install.
+
+name: Cursor Branch Sync
+
+on:
+  create:
+  delete:
+  push:
+  pull_request:
+    types: [closed]
+
+permissions:
+  contents: read
+  pull-requests: read
+
+jobs:
+  sync:
+    runs-on: [self-hosted, Windows]
+    steps:
+      - name: Forward event to local branch sync
+        working-directory: C:\Users\you\cursor-helper
+        shell: cmd
+        run: node src\cli.js

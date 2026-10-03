@@ -1,8 +1,18 @@
 # Cursor Branch Sync
 
-Small Node.js service that keeps a **local Git clone** synchronized with feature branches managed remotely (for example by Cursor Mobile / Cloud Agents) using **GitHub webhooks**.
+Small Node.js tool that keeps a **local Git clone** synchronized with feature branches managed remotely (for example by Cursor Mobile / Cloud Agents).
 
-One running process manages **one** repository. Point it at any clone by editing `.env` before launch.
+One install manages **one** repository. Point it at any clone by editing `.env`.
+
+## Modes
+
+| `SYNC_MODE` | How events arrive | Inbound ports / tunnel |
+| --- | --- | --- |
+| `runner` (recommended) | GitHub Actions on a **self-hosted Windows runner** invokes `npm run sync` | None |
+| `webhook` | GitHub webhook → local HTTP server | Needs a public HTTPS URL (tunnel) |
+| `both` | Runner and webhook together | Same as webhook if you use that path |
+
+GitHub Actions (or the webhook) only **detects and forwards** events. This Node app still decides what to do and performs all Git operations with the same safety checks.
 
 ## What it does
 
@@ -18,25 +28,23 @@ One running process manages **one** repository. Point it at any clone by editing
 
 ---
 
-## Windows setup
+## Windows setup (self-hosted runner)
+
+No inbound ports, webhook server, polling, or public IP.
 
 ### 1. Prerequisites
 
 - [Node.js 18+](https://nodejs.org/) (LTS recommended)
 - [Git for Windows](https://git-scm.com/download/win)
 - A local clone of the GitHub repository you want to keep in sync
+- Permission to add a self-hosted runner on that GitHub repository (or org)
 
-### 2. Install dependencies
-
-Open PowerShell or Command Prompt in this project folder:
+### 2. Install this tool
 
 ```bat
+git clone https://github.com/<you>/cursor-helper.git C:\Users\you\cursor-helper
+cd C:\Users\you\cursor-helper
 npm install
-```
-
-### 3. Configure `.env`
-
-```bat
 copy .env.example .env
 notepad .env
 ```
@@ -48,62 +56,120 @@ Set at least:
 | `REPO_PATH` | Absolute path to your local clone (e.g. `C:\Users\you\projects\my-repo`) |
 | `GITHUB_OWNER` | GitHub user or org that owns the repo |
 | `GITHUB_REPO` | Repository name |
-| `GITHUB_WEBHOOK_SECRET` | Long random string (you will paste the same value into GitHub) |
-| `GITHUB_TOKEN` | PAT used to list open pull requests |
-| `PORT` | Local listen port (default `3000`) |
+| `SYNC_MODE` | `runner` |
 | `BRANCH_PREFIX` | Only manage branches with this prefix (default `cursor/`) |
 | `BASE_BRANCH` | Branch to return to when nothing else is open (default `main`) |
-| `LOG_PREFIX` | Optional log label (default `branch-sync`) |
 
-Create a GitHub token with permission to read pull requests on that repository (classic `repo` / `public_repo`, or a fine-grained token with **Pull requests: Read**).
+`GITHUB_TOKEN` in `.env` is optional for runner mode when jobs run inside GitHub Actions (the workflow token is used). Keep a PAT in `.env` if you want to run `npm run sync` manually outside Actions.
 
-### 4. Expose the webhook endpoint to GitHub
+You can leave `GITHUB_WEBHOOK_SECRET` and `PORT` unset when `SYNC_MODE=runner`.
 
-GitHub must reach `http://localhost:PORT/webhook` over HTTPS. The simplest secure approach on a personal machine is a tunnel:
+### 3. Install and register the GitHub self-hosted runner (Windows)
 
-**Recommended: Cloudflare Tunnel** (free, stable HTTPS URL) or **ngrok**.
+In the **managed repository** on GitHub:
 
-Example with ngrok after the app is running:
+1. **Settings → Actions → Runners → New self-hosted runner**
+2. Choose **Windows** and follow the download/config commands GitHub shows (they include a unique token).
 
-```bat
-ngrok http 3000
+Typical flow in PowerShell (paths/version will match GitHub’s UI):
+
+```powershell
+mkdir C:\actions-runner; cd C:\actions-runner
+# Download and extract the runner package from the GitHub instructions, then:
+.\config.cmd --url https://github.com/<owner>/<repo> --token <token-from-github-ui>
 ```
 
-Copy the HTTPS forwarding URL (e.g. `https://abc123.ngrok-free.app`).
+Accept the defaults unless you need a custom runner name or labels. The runner registers with the `self-hosted` and `Windows` labels used by the workflow template.
 
-Do not open the port on your router without TLS. Signature verification (next step) protects the endpoint even when the URL is public.
+### 4. Run the runner as a Windows service
 
-### 5. Create the GitHub webhook
+Still in the runner folder (PowerShell **as Administrator**):
 
-In the **target repository** on GitHub:
+```powershell
+.\svc.cmd install
+.\svc.cmd start
+```
 
-1. **Settings → Webhooks → Add webhook**
-2. **Payload URL:** `https://<your-tunnel-host>/webhook`
-3. **Content type:** `application/json`
-4. **Secret:** the same value as `GITHUB_WEBHOOK_SECRET`
-5. **Which events:** choose **Let me select individual events** and enable:
-   - **Branch or tag creation**
-   - **Branch or tag deletion**
-   - **Pushes**
-   - **Pull requests**
-6. Save. GitHub will send a `ping`; the app logs it when running.
+Check status:
 
-### 6. Start the application
+```powershell
+.\svc.cmd status
+```
+
+The service should show as running. It starts with Windows after install.
+
+To stop/uninstall later: `.\svc.cmd stop` then `.\svc.cmd uninstall`.
+
+### 5. Add the GitHub Actions workflow
+
+Copy the template into the **managed** repository (the one whose branches Cursor publishes):
+
+```bat
+copy templates\github-actions\cursor-branch-sync.yml <path-to-managed-repo>\.github\workflows\cursor-branch-sync.yml
+```
+
+Edit the workflow’s `working-directory` so it points at this install, for example:
+
+```yaml
+working-directory: C:\Users\you\cursor-helper
+```
+
+Commit and push that workflow on `main` (or your default branch) so GitHub can run it.
+
+The workflow listens for create / delete / push / merged pull_request events, then runs:
+
+```bat
+node src\cli.js
+```
+
+which reads `GITHUB_EVENT_NAME` and `GITHUB_EVENT_PATH` and reuses the same branch-management logic as the webhook path.
+
+### 6. Verify
+
+1. Confirm the runner is **Idle** under **Settings → Actions → Runners**.
+2. Create and push `cursor/test-sync` (or start a Cursor agent that publishes a branch).
+3. Open the Actions tab: **Cursor Branch Sync** should run on the self-hosted runner.
+4. Locally, `REPO_PATH` should check out that branch (working tree must be clean).
+
+---
+
+## Optional: webhook mode
+
+Use this if you prefer GitHub to POST events to a local HTTP server instead of (or in addition to) Actions.
+
+### Configure
+
+In `.env` set `SYNC_MODE=webhook` (or `both`) and:
+
+| Variable | Purpose |
+| --- | --- |
+| `GITHUB_WEBHOOK_SECRET` | Long random string (same value in the GitHub webhook) |
+| `GITHUB_TOKEN` | PAT used to list open pull requests |
+| `PORT` | Local listen port (default `3000`) |
 
 ```bat
 npm start
 ```
 
-You should see logs similar to:
+### Expose the endpoint
 
-```text
-[branch-sync] Listening on port 3000
-[branch-sync] Managing you/my-repo at C:\Users\you\projects\my-repo
+GitHub must reach `http://localhost:PORT/webhook` over HTTPS. Use a tunnel such as Cloudflare Tunnel or ngrok:
+
+```bat
+ngrok http 3000
 ```
 
-Health check: open `http://localhost:3000/health` in a browser.
+### Create the GitHub webhook
 
-### 7. (Optional) Start automatically on Windows
+In the managed repository:
+
+1. **Settings → Webhooks → Add webhook**
+2. **Payload URL:** `https://<your-tunnel-host>/webhook`
+3. **Content type:** `application/json`
+4. **Secret:** same as `GITHUB_WEBHOOK_SECRET`
+5. **Events:** Branch or tag creation, Branch or tag deletion, Pushes, Pull requests
+
+### Optional autostart (webhook server)
 
 **PM2**
 
@@ -114,14 +180,7 @@ pm2 save
 pm2 startup
 ```
 
-Follow the command `pm2 startup` prints so PM2 resumes after reboot.
-
-**Task Scheduler**
-
-1. Create a task that runs at logon.
-2. Program: path to `node.exe`
-3. Arguments: path to `src\index.js`
-4. Start in: this project folder (so `.env` is found)
+**Task Scheduler:** run `node.exe` with `src\index.js` at logon, start-in set to this project folder.
 
 ---
 
@@ -142,12 +201,19 @@ Use a throwaway feature branch on the configured repository (keep a clean workin
 4. **Safety** — Make a local edit without committing, then trigger a branch switch.  
    Expect: `WARNING: Local changes detected; … aborted` and no checkout change.
 
+Manual CLI (same as Actions, useful for debugging):
+
+```bat
+npm run sync -- --event push --payload path\to\event.json
+```
+
 ---
 
 ## Notes
 
 - Events for any repository other than `GITHUB_OWNER/GITHUB_REPO` are ignored.
-- Duplicate GitHub deliveries (`X-GitHub-Delivery`) are ignored.
+- Duplicate GitHub webhook deliveries (`X-GitHub-Delivery`) are ignored.
+- Runner and webhook share a file lock so they will not interleave Git ops if `SYNC_MODE=both`.
 - Force-pushes are refused (cannot fast-forward safely).
-- Deleting a merged branch from `origin` uses the Git credentials already configured for that local clone (SSH key or credential manager). The `GITHUB_TOKEN` is used for the REST API (open PR lookup), not for `git push`.
-- To sync a second repository, run a second process with its own `.env` and webhook/tunnel.
+- Deleting a merged branch from `origin` uses the Git credentials already configured for that local clone (SSH key or credential manager). Listing open PRs uses `GITHUB_TOKEN` (PAT or the Actions token).
+- To sync a second repository, use a second install/`.env` and a second runner (or webhook) scoped to that repository.
