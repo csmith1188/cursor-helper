@@ -1,0 +1,24 @@
+{
+  "name": "cursor-branch-sync",
+  "version": "1.0.0",
+  "description": "Keep a local Git checkout synchronized with remote Cursor feature branches via GitHub webhooks",
+  "main": "src/index.js",
+  "type": "module",
+  "scripts": {
+    "start": "node src/index.js"
+  },
+  "engines": {
+    "node": ">=18"
+  },
+  "keywords": [
+    "github",
+    "webhooks",
+    "git",
+    "cursor"
+  ],
+  "license": "MIT",
+  "dependencies": {
+    "dotenv": "^16.4.7",
+    "express": "^4.21.2"
+  }
+}
